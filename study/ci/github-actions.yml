@@ -1,0 +1,63 @@
+# GitHub Actions — SAST 파이프라인 (Semgrep + Trivy + Gitleaks)
+#
+# 사용법: 이 파일을 레포의 .github/workflows/security.yml 로 복사.
+#
+# 도입 전략(중요): 처음엔 대부분 non-blocking(리포트만)으로 시작하고,
+# 기존 코드 정리가 끝난 스캐너부터 하나씩 blocking(게이트)으로 승격한다.
+# 아래는 "gitleaks만 게이트, 나머지는 리포트"인 현실적인 시작점.
+
+name: security-scan
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  schedule:
+    - cron: '0 0 * * *'   # 매일 자정: 새 CVE 대응 위해 정기 스캔
+
+permissions:
+  contents: read
+  security-events: write   # SARIF를 Security 탭에 올리려면 필요
+
+jobs:
+  semgrep:
+    runs-on: ubuntu-latest
+    container: semgrep/semgrep      # semgrep 공식 이미지 (설치 불필요)
+    steps:
+      - uses: actions/checkout@v4
+      - name: Semgrep scan
+        run: semgrep --config auto . --sarif -o semgrep.sarif
+        # 게이트로 승격하려면 위에 --error 추가
+        continue-on-error: true      # 리포트만 (막지 않음)
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with: { sarif_file: semgrep.sarif }
+
+  trivy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trivy scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          format: sarif
+          output: trivy.sarif
+          exit-code: '0'             # 리포트만. 게이트는 '1'
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with: { sarif_file: trivy.sarif }
+
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }     # 히스토리 전체를 봐야 하므로 full clone
+      - name: Gitleaks scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: 'true'
+        # gitleaks-action은 기본이 게이트(발견 시 실패). 시크릿은 처음부터
+        # 막는 게 맞다 — 한 번 새면 되돌릴 수 없으니.

@@ -1,0 +1,46 @@
+# GitLab CI — SAST 파이프라인 (Semgrep + Trivy + Gitleaks)
+#
+# 사용법: 레포 루트의 .gitlab-ci.yml 에 이 stage들을 합치거나 그대로 사용.
+# 도입 전략은 GitHub 버전과 동일: 처음엔 리포트, 정리되면 게이트로 승격.
+
+stages:
+  - security
+
+# --- Semgrep: 코드 정적분석 -------------------------------------------------
+semgrep:
+  stage: security
+  image: semgrep/semgrep
+  script:
+    - semgrep --config auto . --sarif -o semgrep.sarif
+    # 게이트로 승격: 위 명령에 --error 추가
+  allow_failure: true                 # 리포트만 (막지 않음)
+  artifacts:
+    paths: [semgrep.sarif]
+    when: always
+
+# --- Trivy: 의존성/설정/시크릿 ---------------------------------------------
+trivy:
+  stage: security
+  image:
+    name: aquasec/trivy:latest
+    entrypoint: [""]
+  script:
+    - trivy fs . --severity HIGH,CRITICAL --exit-code 0 -f json -o trivy.json
+    # 게이트로 승격: --exit-code 1
+  allow_failure: true
+  artifacts:
+    paths: [trivy.json]
+    when: always
+
+# --- Gitleaks: 시크릿 스캔 (처음부터 게이트 권장) --------------------------
+gitleaks:
+  stage: security
+  image:
+    name: zricethezav/gitleaks:latest
+    entrypoint: [""]
+  script:
+    - gitleaks detect --source . --redact -v --exit-code 1 -f json -o gitleaks.json
+  allow_failure: false                # 시크릿은 처음부터 막는다
+  artifacts:
+    paths: [gitleaks.json]
+    when: always
