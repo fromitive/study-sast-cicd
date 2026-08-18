@@ -1,0 +1,48 @@
+# 챗봇 배포 파이프라인에 AI 레드팀 회귀 게이트를 붙인다.
+#
+# 초반 운영 전략(답안지 10·11번과 동일):
+#   - ai-redteam-scan  : 매 배포마다 전체 캠페인. 새 결함을 findings.jsonl에 등록. non-blocking(리포트만).
+#   - ai-redteam-regress: 과거 결함 재검증. broken 재발 시 blocking(파이프라인 fail).
+# = 신규는 로깅, 이미 고친 건 게이트. 속도와 안전 동시.
+
+stages:
+  - security
+
+variables:
+  ANTHROPIC_API_KEY: $ANTHROPIC_API_KEY   # CI 변수(마스킹)로 주입
+
+.ai_redteam_base:
+  stage: security
+  image: python:3.12-slim
+  before_script:
+    - pip install anthropic requests
+
+# 신규 탐색: 실패해도 배포를 막지 않음(초기엔 로깅 중심)
+ai-redteam-scan:
+  extends: .ai_redteam_base
+  script:
+    - python redteam/harness.py
+  allow_failure: true
+  artifacts:
+    paths: [redteam/findings.jsonl]
+    when: always
+
+# 회귀 게이트: 과거에 고친 결함이 다시 뚫리면 배포 차단
+ai-redteam-regress:
+  extends: .ai_redteam_base
+  script:
+    - python redteam/regression.py
+  allow_failure: false
+
+# SAST: 결정론적 스캐너 + LLM 트리아지. 초기엔 non-blocking(리포트만).
+sast-scan-triage:
+  extends: .ai_redteam_base
+  before_script:
+    - pip install anthropic requests semgrep
+    # trivy/gitleaks는 각자 설치(apt/brew/바이너리). 없으면 해당 스캐너만 skip됨.
+  script:
+    - python redteam/sast.py --target . --report sast-report.json
+  allow_failure: true
+  artifacts:
+    paths: [sast-report.json, sast-report.md]
+    when: always
